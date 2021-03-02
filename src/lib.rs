@@ -25,17 +25,31 @@
 // Current implementation is based on:
 // * https://github.com/sekrit-twc/zimg/tree/master/src/zimg/resize
 // * https://github.com/PistonDevelopers/image/blob/master/src/imageops/sample.rs
+#![no_std]
 #![deny(missing_docs)]
+
+extern crate alloc as std;
 
 use fallible_collections::FallibleVec;
 use std::sync::Arc;
 use fallible_collections::TryHashMap;
-use std::f32;
+use core::f32;
 use std::fmt;
-use std::num::NonZeroUsize;
+use core::num::NonZeroUsize;
+use std::boxed::Box;
+use std::vec::{Vec};
+
+extern "C" {
+    fn sin(angle: f64) -> f64;
+    fn fabs(value: f64) -> f64;
+    fn ceil(value: f64) -> f64;
+    fn floor(value: f64) -> f64;
+    fn pow(x: f64, y: f64) -> f64;
+    fn round(value: f64) -> f64;
+}
 
 /// See [Error]
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// Pixel format from the [rgb] crate.
 pub mod px;
@@ -101,7 +115,7 @@ fn point_kernel(_: f32) -> f32 {
 
 #[inline]
 fn triangle_kernel(x: f32) -> f32 {
-    f32::max(1.0 - x.abs(), 0.0)
+    f32::max(1.0 - unsafe { fabs(x as f64) } as f32, 0.0)
 }
 
 // Taken from
@@ -110,15 +124,15 @@ fn triangle_kernel(x: f32) -> f32 {
 // https://github.com/sekrit-twc/zimg/blob/1a606c0/src/zimg/resize/filter.cpp#L149
 #[inline(always)]
 fn cubic_bc(b: f32, c: f32, x: f32) -> f32 {
-    let a = x.abs();
+    let a = unsafe { fabs(x as f64) };
     let k = if a < 1.0 {
-        (12.0 - 9.0 * b - 6.0 * c) * a.powi(3) +
-        (-18.0 + 12.0 * b + 6.0 * c) * a.powi(2) +
+        (12.0 - 9.0 * b - 6.0 * c) * unsafe { pow(a, 3.0) as f32 } +
+        (-18.0 + 12.0 * b + 6.0 * c) * unsafe { pow(a, 2.0) as f32 } +
         (6.0 - 2.0 * b)
     } else if a < 2.0 {
-        (-b - 6.0 * c) * a.powi(3) +
-        (6.0 * b + 30.0 * c) * a.powi(2) +
-        (-12.0 * b - 48.0 * c) * a +
+        (-b - 6.0 * c) * unsafe { pow(a, 3.0) as f32 } +
+        (6.0 * b + 30.0 * c) * unsafe { pow(a, 2.0) as f32 } +
+        (-12.0 * b - 48.0 * c) * a as f32 +
         (8.0 * b + 24.0 * c)
     } else {
         0.0
@@ -132,13 +146,13 @@ fn sinc(x: f32) -> f32 {
         1.0
     } else {
         let a = x * f32::consts::PI;
-        a.sin() / a
+        (unsafe { sin(a as f64) } as f32) / a
     }
 }
 
 #[inline(always)]
 fn lanczos(taps: f32, x: f32) -> f32 {
-    if x.abs() < taps {
+    if (unsafe { fabs(x as f64) } as f32) < taps {
         sinc(x) * sinc(x / taps)
     } else {
         0.0
@@ -149,7 +163,7 @@ fn lanczos(taps: f32, x: f32) -> f32 {
 #[allow(non_snake_case)]
 #[allow(non_upper_case_globals)]
 pub mod Pixel {
-    use std::marker::PhantomData;
+    use core::marker::PhantomData;
     use crate::formats;
 
     /// Grayscale, 8-bit.
@@ -210,7 +224,7 @@ pub mod Pixel {
 /// These structs implement `PixelFormat` trait that allows conversion to and from internal pixel representation.
 #[doc(hidden)]
 pub mod formats {
-    use std::marker::PhantomData;
+    use core::marker::PhantomData;
     /// RGB pixels
     #[derive(Debug, Copy, Clone)]
     pub struct Rgb<InputSubpixel, OutputSubpixel>(pub(crate) PhantomData<(InputSubpixel, OutputSubpixel)>);
@@ -305,13 +319,13 @@ impl Scale {
         let ratio = s1.get() as f64 / s2 as f64;
         // Scale the filter when downsampling.
         let filter_scale = ratio.max(1.);
-        let filter_radius = (support as f64 * filter_scale).ceil();
+        let filter_radius = unsafe { ceil(support as f64 * filter_scale) };
         let mut res = Vec::try_with_capacity(s2)?;
         for x2 in 0..s2 {
             let x1 = (x2 as f64 + 0.5) * ratio - 0.5;
-            let start = (x1 - filter_radius).ceil() as isize;
+            let start = unsafe { ceil(x1 - filter_radius) } as isize;
             let start = start.min(s1.get() as isize - 1).max(0) as usize;
-            let end = (x1 + filter_radius).floor() as isize;
+            let end = unsafe { floor(x1 + filter_radius) } as isize;
             let end = (end.min(s1.get() as isize - 1).max(0) as usize).max(start);
             let sum: f64 = (start..=end).map(|i| (kernel)(((i as f64 - x1) / filter_scale) as f32) as f64).sum();
             let key = (end - start, (filter_scale as f32).to_ne_bytes(), (start as f32 - x1 as f32).to_ne_bytes());
@@ -440,8 +454,6 @@ pub enum Error {
     InvalidParameters,
 }
 
-impl std::error::Error for Error {}
-
 impl From<fallible_collections::TryReserveError> for Error {
     #[inline(always)]
     fn from(_: fallible_collections::TryReserveError) -> Self {
@@ -466,7 +478,7 @@ fn oom() {
 
 #[test]
 fn niche() {
-    assert_eq!(std::mem::size_of::<Resizer<formats::Gray<f32, f32>>>(), std::mem::size_of::<Option<Resizer<formats::Gray<f32, f32>>>>());
+    assert_eq!(core::mem::size_of::<Resizer<formats::Gray<f32, f32>>>(), core::mem::size_of::<Option<Resizer<formats::Gray<f32, f32>>>>());
 }
 
 #[test]
@@ -481,7 +493,7 @@ fn zeros() {
 fn premultiply() {
     use px::RGBA;
     let mut r = new(2, 2, 3, 4, Pixel::RGBA8P, Type::Triangle).unwrap();
-    let mut dst = vec![RGBA::new(0u8,0,0,0u8); 12];
+    let mut dst = std::vec![RGBA::new(0u8,0,0,0u8); 12];
     r.resize(&[
         RGBA::new(255,127,3,255), RGBA::new(0,0,0,0),
         RGBA::new(255,255,255,0), RGBA::new(0,255,255,0),
@@ -498,7 +510,7 @@ fn premultiply() {
 fn premultiply_solid() {
     use px::RGBA;
     let mut r = new(2, 2, 3, 4, Pixel::RGBA8P, Type::Triangle).unwrap();
-    let mut dst = vec![RGBA::new(0u8,0,0,0u8); 12];
+    let mut dst = std::vec![RGBA::new(0u8,0,0,0u8); 12];
     r.resize(&[
         RGBA::new(255,255,255,255), RGBA::new(0,0,0,255),
         RGBA::new(0,0,0,255), RGBA::new(0,0,0,255),
@@ -516,7 +528,7 @@ fn resize_stride() {
     use rgb::FromSlice;
 
     let mut r = new(2, 2, 3, 4, Pixel::Gray16, Type::Triangle).unwrap();
-    let mut dst = vec![0; 12];
+    let mut dst = std::vec![0; 12];
     r.resize_stride(&[
         65535,65535,1,2,
         65535,65535,3,4,
@@ -529,7 +541,7 @@ fn resize_float() {
     use rgb::FromSlice;
 
     let mut r = new(2, 2, 3, 4, Pixel::GrayF32, Type::Triangle).unwrap();
-    let mut dst = vec![0.; 12];
+    let mut dst = std::vec![0.; 12];
     r.resize_stride(&[
         65535.,65535.,1.,2.,
         65535.,65535.,3.,4.,

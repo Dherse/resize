@@ -167,6 +167,8 @@ impl<F: ToFloat, T: ToFloat> PixelFormat for formats::Gray<F, T> {
 
 use self::f::ToFloat;
 mod f {
+    use crate::round;
+
     /// Internal, please don't use
     pub trait ToFloat: Sized + Copy + 'static {
         fn to_float(self) -> f32;
@@ -182,7 +184,7 @@ mod f {
         #[inline(always)]
         fn from_float(f: f32) -> Self {
             unsafe {
-                (0f32).max(f.round()).min(255.).to_int_unchecked()
+                (0f32).max(round(f as f64) as f32).min(255.).to_int_unchecked()
             }
         }
     }
@@ -196,7 +198,7 @@ mod f {
         #[inline(always)]
         fn from_float(f: f32) -> Self {
             unsafe {
-                (0f32).max(f.round()).min(65535.).to_int_unchecked()
+                (0f32).max(round(f as f64) as f32).min(65535.).to_int_unchecked()
             }
         }
     }
